@@ -1,6 +1,6 @@
 import supabase from "App/Utils/SupabaseClient";
 
-export async function uploadImage(file: any) {
+export async function uploadImageSupabase(file: any) {
   try {
     // Memeriksa apakah file ada
     console.log("Step 1: Received file metadata:", file);

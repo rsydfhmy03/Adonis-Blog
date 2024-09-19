@@ -8,7 +8,9 @@ Route.group(function () {
 Route.resource("article", "Public/ArticlesController")
   .apiOnly()
   .middleware({
-    // store: ["auth"],
+    store: ["auth"],
     update: ["auth"],
     destroy: ["auth"],
   });
+
+// Route.post("/articleImages", "Public/ArticlesController.storeImage");
