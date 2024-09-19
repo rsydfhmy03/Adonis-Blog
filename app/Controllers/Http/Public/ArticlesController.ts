@@ -3,11 +3,7 @@ import ArticlesService from "App/Services/Public/ArticlesService";
 import CreateArticlesValidator from "App/Validators/Public/CreateArticlesValidator";
 import UpdateArticlesValidator from "App/Validators/Public/UpdateArticlesValidator";
 import { ValidationException } from "@ioc:Adonis/Core/Validator";
-// import { uploadImage } from "App/Utils/UploadImage";
-import bucket from "Config/storage";
-import { v4 as uuidv4 } from "uuid";
-import path from "path";
-import fs from "fs";
+import GoogleCloudStorage from "App/Utils/GoogleCloudStorage";
 export default class ArticlesController {
   service = new ArticlesService();
   FETCHED_ATTRIBUTE = [
@@ -28,55 +24,6 @@ export default class ArticlesController {
     }
   }
 
-  // public async uploadImage(file: any) {
-  //   const fileName = `${new Date().getTime()}_${file.clientName}`;
-  //   // const fileUpload = bucket.file(`articles/${fileName}`);
-  //   // console.log(fileUpload);
-  //   // // Menggunakan file.tmpPath jika tersedia, karena Adonis sering menggunakan file sementara
-  //   // if (file.tmpPath) {
-  //   //   await fileUpload.save(file.tmpPath);
-  //   // } else {
-  //   //   throw new Error("File stream atau path tidak tersedia.");
-  //   // }
-  //   // Buat stream untuk meng-upload file ke Google Cloud Storage
-  //   const blob = bucket.file(`articles/${fileName}`);
-  //   const blobStream = blob.createWriteStream({ resumable: false });
-
-  //   // Mengembalikan URL file setelah diunggah
-  //   // const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
-  //   // const publicUrl = `https://storage.googleapis.com/${bucket.name}/${blob.name}`;
-  //   blobStream.on("finish", () => {
-  //     const publicUrl = `https://storage.googleapis.com/${bucket.name}/${blob.name}`;
-  //     console.log("Step 4: File uploaded successfully, public URL:", publicUrl);
-  //     resolve(publicUrl);
-  //     return publicUrl;
-  //   });
-  // }
-
-  // public async store({ request, response }: HttpContextContract) {
-  //   try {
-  //     await request.validate(CreateArticlesValidator);
-  //     console.log(request.all());
-  //     const data = request.only(this.FETCHED_ATTRIBUTE);
-  //     console.log("===Data===", data.image);
-
-  //     const imageUpload = request.file("image");
-  //     console.log("===Image Upload===", imageUpload?.size);
-
-  //     const result = await this.service.store(data);
-  //     return response.api(result, "Articles created!", 201);
-  //   } catch (error) {
-  //     if (error instanceof ValidationException) {
-  //       const errorValidation: any = error;
-  //       return response.error(
-  //         errorValidation.message,
-  //         errorValidation.messages.errors,
-  //         422
-  //       );
-  //     }
-  //     return response.error(error.message);
-  //   }
-  // }
   public async store({ request, response, auth }: HttpContextContract) {
     try {
       // Validasi input
@@ -84,49 +31,37 @@ export default class ArticlesController {
 
       // Mengambil data artikel
       const data = request.only(this.FETCHED_ATTRIBUTE);
-      console.log("===Data===", data);
       data.user_id = auth.use("api").user?.id;
-      console.log(data.user_id);
+
+      // Ambil array ID kategori dari input
+      let categoryIds = request.input("category_id");
+      console.log("==Category id:", categoryIds);
+      // Pastikan categoryIds adalah array
+      if (!Array.isArray(categoryIds)) {
+        categoryIds = [categoryIds]; // Ubah menjadi array jika bukan
+      }
+
       // Proses unggah gambar
       const imageUpload = request.file("image");
-      if (!imageUpload) {
-        return response.badRequest({ message: "Image is required" });
+      if (imageUpload) {
+        const imageUrl = await GoogleCloudStorage.uploadImage(
+          imageUpload,
+          "articles"
+        );
+        data.image = imageUrl;
       }
 
-      // Cek ukuran file, jenis file, dll. (opsional)
-      if (imageUpload.size > 2 * 1024 * 1024) {
-        // Misal maksimum 2MB
-        return response.badRequest({ message: "Image size exceeds the limit" });
+      // Simpan artikel
+      const article = await this.service.store(data);
+
+      // Menyimpan relasi kategori (many-to-many)
+      if (categoryIds && categoryIds.length > 0) {
+        await article
+          .related("categories")
+          .attach(categoryIds.map((id) => Number(id)));
       }
 
-      // Membuat nama unik untuk file di Google Cloud Storage
-      const fileName = `${uuidv4()}_${path.basename(imageUpload.clientName)}`;
-      const blob = bucket.file(`articles/${fileName}`);
-      const blobStream = blob.createWriteStream({ resumable: false });
-
-      blobStream.on("error", (err) => {
-        throw new Error(`File upload error: ${err.message}`);
-      });
-
-      // Menunggu upload selesai
-      await new Promise<void>((resolve, reject) => {
-        blobStream.on("finish", resolve);
-        blobStream.on("error", reject);
-        blobStream.end(fs.readFileSync(imageUpload.tmpPath!)); // Membaca buffer file
-      });
-
-      // Mendapatkan URL publik file
-      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${blob.name}`;
-
-      // Menyimpan artikel ke dalam database dengan URL gambar
-      // const article = await article.create({
-      //   title: data.title,
-      //   content: data.content,
-      //   image_url: publicUrl,
-      // });
-      if (!data.image_url) data.image = publicUrl;
-      const result = await this.service.store(data);
-      return response.api(result, "Articles created!", 201);
+      return response.api(article, "Articles created!", 201);
     } catch (error) {
       console.error(error);
       if (error.messages) {
@@ -135,6 +70,7 @@ export default class ArticlesController {
       return response.error(error.message);
     }
   }
+
   public async show({ params, request, response }: HttpContextContract) {
     try {
       const options = request.parseParams(request.all());
@@ -150,18 +86,58 @@ export default class ArticlesController {
 
   public async update({ params, request, response }: HttpContextContract) {
     try {
+      // Validasi input
       await request.validate(UpdateArticlesValidator);
       const data = request.only(this.FETCHED_ATTRIBUTE);
-      const image = request.file("image");
-      if (image) {
-        const imageUrl = await uploadImage(image);
-        if (imageUrl) data.image_url = imageUrl;
+
+      // Proses unggah gambar
+      const imageUpload = request.file("image");
+      let oldImageUrl: string | null = null;
+      if (imageUpload) {
+        // Dapatkan artikel lama untuk mengambil gambar lama
+        const oldArticle = await this.service.show(params.id);
+        if (oldArticle && oldArticle.image) {
+          oldImageUrl = oldArticle.image;
+        }
+
+        // Unggah gambar baru
+        const imageUrl = await GoogleCloudStorage.uploadImage(
+          imageUpload,
+          "articles"
+        );
+        data.image = imageUrl;
       }
-      console.log("Pass 1");
+
+      // Update artikel
       const result = await this.service.update(params.id, data);
       if (!result) {
         return response.api(null, `Articles with id: ${params.id} not found`);
       }
+
+      // Menghapus gambar lama jika ada
+      if (oldImageUrl) {
+        await GoogleCloudStorage.deleteImage(oldImageUrl);
+      }
+
+      // Mengupdate kategori
+      let categoryIds = request.input("category_id");
+      if (!Array.isArray(categoryIds)) {
+        categoryIds = [categoryIds];
+      }
+      console.log("==Category id:", categoryIds);
+
+      // Filter dan validasi categoryIds agar hanya berisi angka valid
+      categoryIds = categoryIds
+        .map((id) => Number(id))
+        .filter((id) => !isNaN(id) && id > 0); // Pastikan bukan NaN dan angka positif
+
+      // Update relasi kategori (many-to-many)
+      if (categoryIds.length > 0) {
+        await result.related("categories").sync(categoryIds);
+      } else {
+        await result.related("categories").detach();
+      }
+
       return response.api(result, "Articles updated!");
     } catch (error) {
       if (error instanceof ValidationException) {
@@ -196,7 +172,4 @@ export default class ArticlesController {
       return response.error(error.message);
     }
   }
-}
-function resolve(publicUrl: string) {
-  throw new Error("Function not implemented.");
 }

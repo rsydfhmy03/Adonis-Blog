@@ -36,11 +36,17 @@ export default class Articles extends BaseModel {
   @column.dateTime({ autoCreate: true, autoUpdate: true })
   public updated_at: DateTime;
 
-  @belongsTo(() => Account)
+  @belongsTo(() => Account, {
+    foreignKey: "user_id",
+  })
   public user: BelongsTo<typeof Account>;
 
   @manyToMany(() => Category, {
     pivotTable: "article_category",
+    localKey: "id",
+    pivotForeignKey: "article_id",
+    relatedKey: "id",
+    pivotRelatedForeignKey: "category_id",
   })
   public categories: ManyToMany<typeof Category>;
 
