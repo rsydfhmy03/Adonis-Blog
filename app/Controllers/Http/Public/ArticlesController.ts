@@ -4,15 +4,37 @@ import CreateArticlesValidator from "App/Validators/Public/CreateArticlesValidat
 import UpdateArticlesValidator from "App/Validators/Public/UpdateArticlesValidator";
 import { ValidationException } from "@ioc:Adonis/Core/Validator";
 import GoogleCloudStorage from "App/Utils/GoogleCloudStorage";
+
 export default class ArticlesController {
   service = new ArticlesService();
-  FETCHED_ATTRIBUTE = [
-    // attribute
-    "title",
-    "content",
-    "image",
-    "user_id",
-  ];
+  FETCHED_ATTRIBUTE = ["title", "content", "image", "user_id"];
+
+  // Helper function to handle image upload
+  private async handleImageUpload(
+    file: any,
+    folder: string,
+    oldImageUrl?: string
+  ): Promise<string | null> {
+    if (file) {
+      // Delete old image if exists
+      if (oldImageUrl) {
+        await GoogleCloudStorage.deleteImage(oldImageUrl);
+      }
+      // Upload new image
+      return await GoogleCloudStorage.uploadImage(file, folder);
+    }
+    return null;
+  }
+
+  // Helper function to process category IDs
+  private processCategoryIds(categoryIds: any): number[] {
+    if (!Array.isArray(categoryIds)) {
+      categoryIds = [categoryIds];
+    }
+    return categoryIds
+      .map((id) => Number(id))
+      .filter((id) => !isNaN(id) && id > 0);
+  }
 
   public async index({ request, response }: HttpContextContract) {
     try {
@@ -28,46 +50,29 @@ export default class ArticlesController {
     try {
       // Validasi input
       await request.validate(CreateArticlesValidator);
-
-      // Mengambil data artikel
       const data = request.only(this.FETCHED_ATTRIBUTE);
       data.user_id = auth.use("api").user?.id;
 
-      // Ambil array ID kategori dari input
-      let categoryIds = request.input("category_id");
-      console.log("==Category id:", categoryIds);
-      // Pastikan categoryIds adalah array
-      if (!Array.isArray(categoryIds)) {
-        categoryIds = [categoryIds]; // Ubah menjadi array jika bukan
-      }
-
       // Proses unggah gambar
       const imageUpload = request.file("image");
-      if (imageUpload) {
-        const imageUrl = await GoogleCloudStorage.uploadImage(
-          imageUpload,
-          "articles"
-        );
-        data.image = imageUrl;
-      }
+      const imageUrl = await this.handleImageUpload(imageUpload, "articles");
+      if (imageUrl) data.image = imageUrl;
 
       // Simpan artikel
       const article = await this.service.store(data);
 
-      // Menyimpan relasi kategori (many-to-many)
-      if (categoryIds && categoryIds.length > 0) {
-        await article
-          .related("categories")
-          .attach(categoryIds.map((id) => Number(id)));
+      // Proses kategori
+      const categoryIds = this.processCategoryIds(request.input("category_id"));
+      if (categoryIds.length > 0) {
+        await article.related("categories").attach(categoryIds);
       }
 
       return response.api(article, "Articles created!", 201);
     } catch (error) {
       console.error(error);
-      if (error.messages) {
-        return response.error(error.messages);
-      }
-      return response.error(error.message);
+      return error.messages
+        ? response.error(error.messages)
+        : response.error(error.message);
     }
   }
 
@@ -90,53 +95,27 @@ export default class ArticlesController {
       await request.validate(UpdateArticlesValidator);
       const data = request.only(this.FETCHED_ATTRIBUTE);
 
-      // Proses unggah gambar
-      const imageUpload = request.file("image");
-      let oldImageUrl: string | null = null;
-      if (imageUpload) {
-        // Dapatkan artikel lama untuk mengambil gambar lama
-        const oldArticle = await this.service.show(params.id);
-        if (oldArticle && oldArticle.image) {
-          oldImageUrl = oldArticle.image;
-        }
-
-        // Unggah gambar baru
-        const imageUrl = await GoogleCloudStorage.uploadImage(
-          imageUpload,
-          "articles"
-        );
-        data.image = imageUrl;
-      }
-
-      // Update artikel
-      const result = await this.service.update(params.id, data);
-      if (!result) {
+      // Ambil artikel lama
+      const oldArticle = await this.service.show(params.id);
+      if (!oldArticle) {
         return response.api(null, `Articles with id: ${params.id} not found`);
       }
 
-      // Menghapus gambar lama jika ada
-      if (oldImageUrl) {
-        await GoogleCloudStorage.deleteImage(oldImageUrl);
-      }
+      // Proses unggah gambar baru
+      const imageUpload = request.file("image");
+      const imageUrl = await this.handleImageUpload(
+        imageUpload,
+        "articles",
+        oldArticle.image
+      );
+      if (imageUrl) data.image = imageUrl;
 
-      // Mengupdate kategori
-      let categoryIds = request.input("category_id");
-      if (!Array.isArray(categoryIds)) {
-        categoryIds = [categoryIds];
-      }
-      console.log("==Category id:", categoryIds);
+      // Update artikel
+      const result = await this.service.update(params.id, data);
 
-      // Filter dan validasi categoryIds agar hanya berisi angka valid
-      categoryIds = categoryIds
-        .map((id) => Number(id))
-        .filter((id) => !isNaN(id) && id > 0); // Pastikan bukan NaN dan angka positif
-
-      // Update relasi kategori (many-to-many)
-      if (categoryIds.length > 0) {
-        await result.related("categories").sync(categoryIds);
-      } else {
-        await result.related("categories").detach();
-      }
+      // Proses kategori
+      const categoryIds = this.processCategoryIds(request.input("category_id"));
+      await result.related("categories").sync(categoryIds);
 
       return response.api(result, "Articles updated!");
     } catch (error) {

@@ -2,7 +2,7 @@ import BaseSchema from "@ioc:Adonis/Lucid/Schema";
 
 export default class extends BaseSchema {
   protected tableName = "user.roles";
-
+  public static tags = ["roles"];
   public async up() {
     await this.schema.createSchemaIfNotExists("user");
 
